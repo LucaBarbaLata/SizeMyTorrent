@@ -1,7 +1,8 @@
 import re
-import bencodepy
+import sys
 import os
 import argparse
+import bencodepy
 from colorama import Fore, Style, init
 from tkinter import Tk, filedialog
 
@@ -38,6 +39,7 @@ def format_size(bytes_size):
 
 
 def get_torrent_size(torrent_path):
+    """Return (total_bytes, internal_name, [(path, size), ...])."""
     try:
         with open(torrent_path, "rb") as f:
             torrent = bencodepy.decode(f.read())
@@ -51,10 +53,11 @@ def get_torrent_size(torrent_path):
     except (KeyError, TypeError) as e:
         raise ValueError(f"'{torrent_path}' is not a valid torrent file (missing info dict)") from e
 
+    name = info.get(b"name", b"unknown").decode("utf-8", errors="replace")
+
     # Single-file torrent
     if b"length" in info:
-        name = info[b"name"].decode("utf-8", errors="replace")
-        return info[b"length"], [(name, info[b"length"])]
+        return info[b"length"], name, [(name, info[b"length"])]
 
     # Multi-file torrent
     if b"files" not in info:
@@ -67,28 +70,49 @@ def get_torrent_size(torrent_path):
         total += file_size
         path = "/".join(p.decode("utf-8", errors="replace") for p in file[b"path"])
         files_list.append((path, file_size))
-    return total, files_list
+    return total, name, files_list
 
 
 def main():
     parser = argparse.ArgumentParser(description="Calculate torrent disk usage")
     parser.add_argument("torrents", nargs="*", help="Paths to torrent files")
     parser.add_argument("-lA", "--list-all", action="store_true", help="List all files in each torrent")
+    parser.add_argument("-s", "--sort", action="store_true", help="Sort torrents by size (largest first)")
     parser.add_argument("-o", "--output", help="Save output to a file")
+    parser.add_argument("--no-color", action="store_true", help="Disable colored output (useful for piping)")
     args = parser.parse_args()
+
+    if args.no_color:
+        init(strip=True, autoreset=True)
 
     # If no torrents provided, open file picker
     if not args.torrents:
-        Tk().withdraw()  # hide main window
-        args.torrents = filedialog.askopenfilenames(
+        root = Tk()
+        root.withdraw()
+        selected = filedialog.askopenfilenames(
             title="Select torrent files",
             filetypes=[("Torrent files", "*.torrent")]
         )
-        if not args.torrents:
+        root.destroy()
+        if not selected:
             print(Fore.RED + "No torrents selected. Exiting.")
-            return
+            sys.exit(0)
+        args.torrents = selected
 
-    grand_total = 0
+    # Parse all torrents, separating successes from failures
+    results = []
+    errors = []
+    for torrent_path in args.torrents:
+        try:
+            size, name, files = get_torrent_size(torrent_path)
+            results.append((torrent_path, size, name, files))
+        except (OSError, ValueError) as e:
+            errors.append(str(e))
+
+    if args.sort:
+        results.sort(key=lambda r: r[1], reverse=True)
+
+    grand_total = sum(r[1] for r in results)
     output_lines = []
 
     def emit(colored_text):
@@ -98,20 +122,24 @@ def main():
 
     emit(Fore.CYAN + "\nTorrent sizes:\n" + "-" * 40)
 
-    for torrent in args.torrents:
-        try:
-            size, files = get_torrent_size(torrent)
-        except (OSError, ValueError) as e:
-            emit(Fore.RED + f"  [error] {e}")
-            continue
-
-        grand_total += size
-        torrent_name = os.path.basename(torrent)
-        emit(f"{Fore.YELLOW}{torrent_name}{Style.RESET_ALL} → {Fore.GREEN}{format_size(size)}{Style.RESET_ALL}")
+    for torrent_path, size, name, files in results:
+        torrent_filename = os.path.basename(torrent_path)
+        emit(f"{Fore.YELLOW}{torrent_filename}{Style.RESET_ALL} → {Fore.GREEN}{format_size(size)}{Style.RESET_ALL}")
 
         if args.list_all:
+            multifile = len(files) > 1
+            if multifile:
+                emit(Fore.WHITE + f"  └─ {name}/")
+                file_indent = "       └─ "
+            else:
+                file_indent = "  └─ "
+
             for file_path, file_size in files:
-                emit(Fore.WHITE + f"  └─ {file_path} : {format_size(file_size)}")
+                pct = (file_size / size * 100) if size > 0 else 0
+                emit(Fore.WHITE + f"{file_indent}{file_path} : {format_size(file_size)} ({pct:.1f}%)")
+
+    for err in errors:
+        emit(Fore.RED + f"  [error] {err}")
 
     emit(f"\n{Fore.CYAN}TOTAL REQUIRED SPACE: {Fore.MAGENTA}{format_size(grand_total)}{Style.RESET_ALL}")
 
@@ -122,6 +150,9 @@ def main():
             print(Fore.BLUE + f"\nOutput saved to {args.output}")
         except OSError as e:
             print(Fore.RED + f"Could not write output file: {e}")
+
+    if errors:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
