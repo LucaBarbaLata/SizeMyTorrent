@@ -4,7 +4,6 @@ import os
 import argparse
 import bencodepy
 from colorama import Fore, Style, init
-from tkinter import Tk, filedialog
 
 init(autoreset=True)  # enable color output
 
@@ -66,7 +65,7 @@ def get_torrent_size(torrent_path):
     total = 0
     files_list = []
     for file in info[b"files"]:
-        file_size = file[b"length"]
+        file_size = file.get(b"length", 0)
         total += file_size
         path = "/".join(p.decode("utf-8", errors="replace") for p in file[b"path"])
         files_list.append((path, file_size))
@@ -84,9 +83,17 @@ def main():
 
     if args.no_color:
         init(strip=True, autoreset=True)
+        print(strip_ansi(ascii_art))
+    else:
+        print(ascii_art)
 
     # If no torrents provided, open file picker
     if not args.torrents:
+        try:
+            from tkinter import Tk, filedialog
+        except ImportError:
+            print(Fore.RED + "tkinter is not available. Pass torrent files as arguments.")
+            sys.exit(1)
         root = Tk()
         root.withdraw()
         selected = filedialog.askopenfilenames(
@@ -118,7 +125,7 @@ def main():
     def emit(colored_text):
         """Print a colored line and record the plain-text version."""
         print(colored_text)
-        output_lines.append(strip_ansi(colored_text))
+        output_lines.extend(strip_ansi(colored_text).splitlines())
 
     emit(Fore.CYAN + "\nTorrent sizes:\n" + "-" * 40)
 
@@ -156,5 +163,4 @@ def main():
 
 
 if __name__ == "__main__":
-    print(ascii_art)
     main()
